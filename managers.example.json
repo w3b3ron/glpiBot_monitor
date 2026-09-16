@@ -1,0 +1,14 @@
+{
+  "123456789": {
+    "nome": "Weber Nascimento",
+    "email": "weber.nascimento@empresa.com.br",
+    "cargo": "Gestor de TI",
+    "ativo": true
+  },
+  "987654321": {
+    "nome": "Gestor Exemplo",
+    "email": "gestor@empresa.com.br",
+    "cargo": "Coordenador de Suporte",
+    "ativo": true
+  }
+}

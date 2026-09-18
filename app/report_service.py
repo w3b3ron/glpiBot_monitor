@@ -11,7 +11,7 @@ async def generate_and_send_manager_report(manager_name: str, manager_email: str
     try:
         logging.info(f"Gerando dados do relatório GLPI para o gestor: {manager_name} ({manager_email})...")
 
-        # Busca assíncrona dos dados
+        # Busca assíncrona dos dados existentes
         kpis_raw = await database.fetch_data(queries.SQL_KPI_SUMMARY)
         kpis = kpis_raw[0] if kpis_raw else {}
 
@@ -21,6 +21,12 @@ async def generate_and_send_manager_report(manager_name: str, manager_email: str
         inactive = await database.fetch_data(queries.SQL_INACTIVE_TICKETS, params=(config.INACTIVE_DAYS_THRESHOLD,))
         entity_metrics = await database.fetch_data(queries.SQL_METRICS_BY_ENTITY)
 
+        # Busca dos novos dados: Performance, Soluções Rejeitadas e Ranking
+        tech_performance = await database.fetch_data(queries.SQL_TECH_PERFORMANCE_TODAY)
+        rejected_per_tech = await database.fetch_data(queries.SQL_REJECTED_SOLUTIONS_PER_TECH)
+        rejected_detail = await database.fetch_data(queries.SQL_REJECTED_SOLUTIONS_DETAIL)
+        ranking_weekly = await database.fetch_data(queries.SQL_RANKING_WEEKLY)
+
         # Compila HTML do E-mail
         html_body = email_service.build_html_report(
             manager_name=manager_name,
@@ -29,7 +35,11 @@ async def generate_and_send_manager_report(manager_name: str, manager_email: str
             workload=workload,
             overdue_tickets=overdue,
             inactive_tickets=inactive,
-            entity_metrics=entity_metrics
+            entity_metrics=entity_metrics,
+            tech_performance=tech_performance,
+            rejected_per_tech=rejected_per_tech,
+            rejected_detail=rejected_detail,
+            ranking_weekly=ranking_weekly
         )
 
         subject = f"📊 Relatório GLPI - Monitoramento Executivo ({kpis.get('total_abertos', 0)} chamados abertos)"
@@ -46,7 +56,8 @@ async def generate_and_send_manager_report(manager_name: str, manager_email: str
             "criados_hoje": kpis.get("criados_hoje", 0),
             "resolvidos_hoje": kpis.get("resolvidos_hoje", 0),
             "sem_tecnico": len(unassigned),
-            "em_atraso_critico": len(overdue)
+            "em_atraso_critico": len(overdue),
+            "solucoes_rejeitadas": len(rejected_detail)
         }
 
         return sucesso, metrics_summary
@@ -54,3 +65,4 @@ async def generate_and_send_manager_report(manager_name: str, manager_email: str
     except Exception as e:
         logging.error(f"Erro ao gerar e enviar relatório para {manager_name}: {e}")
         return False, {}
+

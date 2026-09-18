@@ -16,7 +16,11 @@ def build_html_report(
     workload: List[Dict[str, Any]],
     overdue_tickets: List[Dict[str, Any]],
     inactive_tickets: List[Dict[str, Any]],
-    entity_metrics: List[Dict[str, Any]]
+    entity_metrics: List[Dict[str, Any]],
+    tech_performance: List[Dict[str, Any]] = None,
+    rejected_per_tech: List[Dict[str, Any]] = None,
+    rejected_detail: List[Dict[str, Any]] = None,
+    ranking_weekly: List[Dict[str, Any]] = None
 ) -> str:
     """Gera o HTML responsivo e estilizado para o relatório executivo via e-mail."""
     data_hoje = datetime.now().strftime("%d/%m/%Y às %H:%M")
@@ -100,6 +104,72 @@ def build_html_report(
             """
     else:
         rows_entity = '<tr><td colspan="5" style="padding:15px; text-align:center;">Nenhum dado por unidade disponível.</td></tr>'
+
+    # Renderização da Tabela: Performance por Técnico
+    rejeicoes_map = {r["tecnico"]: r["total_solucoes_recusadas"] for r in rejected_per_tech} if rejected_per_tech else {}
+    rows_tech_perf = ""
+    if tech_performance:
+        for tp in tech_performance:
+            mttr = tp.get('mttr_corrido_horas') or 0
+            rejeicoes = rejeicoes_map.get(tp['tecnico'], 0)
+            mttr_style = 'color:#c53030; font-weight:bold;' if mttr and float(mttr) >= config.MTTR_HIGH_THRESHOLD_HOURS else 'color:#333;'
+            rej_badge = f'<span style="background:#f8d7da; color:#721c24; padding:2px 6px; border-radius:4px; font-weight:bold;">{rejeicoes}</span>' if rejeicoes > 0 else '0'
+            rows_tech_perf += f"""
+            <tr>
+                <td style="padding:10px; border-bottom:1px solid #eee; font-weight:bold;">{tp['tecnico']}</td>
+                <td style="padding:10px; border-bottom:1px solid #eee; text-align:center; font-weight:bold; color:#28a745;">{tp['resolvidos_hoje']}</td>
+                <td style="padding:10px; border-bottom:1px solid #eee; text-align:center; {mttr_style}">{mttr}h</td>
+                <td style="padding:10px; border-bottom:1px solid #eee; text-align:center;">{rej_badge}</td>
+            </tr>
+            """
+    else:
+        rows_tech_perf = '<tr><td colspan="4" style="padding:15px; text-align:center;">Nenhum técnico resolveu chamados hoje.</td></tr>'
+
+    # Renderização da Tabela: Soluções Rejeitadas (Detalhado)
+    rows_rejected = ""
+    if rejected_detail:
+        for rd in rejected_detail[:10]:
+            data_rej = rd.get('data_rejeicao', '')
+            if data_rej and hasattr(data_rej, 'strftime'):
+                data_rej = data_rej.strftime('%d/%m/%Y %H:%M')
+            rows_rejected += f"""
+            <tr style="background-color:#fff5f5;">
+                <td style="padding:10px; border-bottom:1px solid #fed7d7; font-weight:bold; color:#c53030;">#{rd.get('chamado', '?')}</td>
+                <td style="padding:10px; border-bottom:1px solid #fed7d7;">{rd.get('titulo', 'Sem título')}</td>
+                <td style="padding:10px; border-bottom:1px solid #fed7d7;">{rd.get('tecnico_autor_solucao', 'NÃO ATRIBUÍDO')}</td>
+                <td style="padding:10px; border-bottom:1px solid #fed7d7;">{rd.get('nome_unidade', 'NÃO INFORMADO')}</td>
+                <td style="padding:10px; border-bottom:1px solid #fed7d7; text-align:center;">{data_rej}</td>
+            </tr>
+            """
+    else:
+        rows_rejected = '<tr><td colspan="5" style="padding:15px; text-align:center; color:#28a745;">\u2705 Nenhuma solução rejeitada registrada.</td></tr>'
+
+    # Renderização da Tabela: Ranking Semanal
+    medalhas = ["\ud83e\udd47", "\ud83e\udd48", "\ud83e\udd49"]
+    rows_ranking = ""
+    if ranking_weekly:
+        menor_mttr_nome = None
+        menor_mttr_val = float('inf')
+        for rw in ranking_weekly:
+            m = rw.get('mttr_corrido_horas') or 0
+            if m and float(m) > 0 and float(m) < menor_mttr_val:
+                menor_mttr_val = float(m)
+                menor_mttr_nome = rw['tecnico']
+
+        for i, rw in enumerate(ranking_weekly):
+            medalha = medalhas[i] if i < len(medalhas) else f"{i+1}\u00ba"
+            mttr_rk = rw.get('mttr_corrido_horas') or 0
+            destaque = ' style="background-color:#fffbeb;"' if rw['tecnico'] == menor_mttr_nome else ''
+            rows_ranking += f"""
+            <tr{destaque}>
+                <td style="padding:10px; border-bottom:1px solid #eee; text-align:center; font-size:18px;">{medalha}</td>
+                <td style="padding:10px; border-bottom:1px solid #eee; font-weight:bold;">{rw['tecnico']}</td>
+                <td style="padding:10px; border-bottom:1px solid #eee; text-align:center; font-weight:bold; color:#2a5298;">{rw['resolvidos_semana']}</td>
+                <td style="padding:10px; border-bottom:1px solid #eee; text-align:center;">{mttr_rk}h</td>
+            </tr>
+            """
+    else:
+        rows_ranking = '<tr><td colspan="4" style="padding:15px; text-align:center;">Nenhum dado de ranking disponível.</td></tr>'
 
     html_content = f"""
     <!DOCTYPE html>
@@ -233,6 +303,55 @@ def build_html_report(
                     </thead>
                     <tbody>
                         {rows_entity}
+                    </tbody>
+                </table>
+
+                <!-- SEÇÃO 6: PERFORMANCE POR TÉCNICO -->
+                <div class="section-title">👨🔧 Performance por Técnico — Hoje</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Técnico</th>
+                            <th style="text-align:center;">Resolvidos Hoje</th>
+                            <th style="text-align:center;">MTTR Corrido</th>
+                            <th style="text-align:center;">Sol. Rejeitadas</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows_tech_perf}
+                    </tbody>
+                </table>
+
+                <!-- SEÇÃO 7: SOLUÇÕES REJEITADAS -->
+                <div class="section-title">❌ Soluções Rejeitadas (Recentes)</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Título</th>
+                            <th>Técnico</th>
+                            <th>Unidade</th>
+                            <th style="text-align:center;">Data Rejeição</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows_rejected}
+                    </tbody>
+                </table>
+
+                <!-- SEÇÃO 8: RANKING SEMANAL -->
+                <div class="section-title">🏆 Ranking da Semana</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="text-align:center;">Pos.</th>
+                            <th>Técnico</th>
+                            <th style="text-align:center;">Resolvidos</th>
+                            <th style="text-align:center;">MTTR Médio</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows_ranking}
                     </tbody>
                 </table>
             </div>

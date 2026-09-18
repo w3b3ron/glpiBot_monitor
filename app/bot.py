@@ -9,7 +9,7 @@ from telegram.ext import (
     ContextTypes
 )
 
-from app import config, security, database, queries, report_service
+from app import config, security, database, queries, report_service, analytics_service
 
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -30,13 +30,19 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>Comandos Disponíveis para Gestores:</b>\n"
         "• /relatorio — Solicita o relatório executivo em HTML por e-mail\n"
         "• /status — Visualiza métricas rápidas de KPIs no Telegram\n"
+        "• /performance — Performance dos técnicos hoje (MTTR + rejeições)\n"
+        "• /insights — Insights automáticos de tendências de categorias\n"
+        "• /ranking — Ranking semanal da equipe com gamificação\n"
         "• /cadastrar_email <code>seu.email@empresa.com</code> — Atualiza seu e-mail de destino\n"
         "• /help — Guia de utilização e suporte\n"
     )
 
     teclado = InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Solicitar Relatório por E-mail", callback_data="confirm_email_send")],
-        [InlineKeyboardButton("📈 Métricas Rápidas (/status)", callback_data="quick_status")]
+        [InlineKeyboardButton("📈 Métricas Rápidas (/status)", callback_data="quick_status")],
+        [InlineKeyboardButton("👨🔧 Performance Técnicos", callback_data="quick_performance")],
+        [InlineKeyboardButton("🧠 Insights", callback_data="quick_insights"),
+         InlineKeyboardButton("🏆 Ranking", callback_data="quick_ranking")]
     ])
 
     await update.message.reply_text(msg, reply_markup=teclado, parse_mode="HTML")
@@ -121,6 +127,66 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg_carregando.edit_text("❌ Falha ao consultar o banco de dados do GLPI.")
 
 
+async def performance_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Exibe a performance dos técnicos no dia atual (resolvidos, MTTR, soluções rejeitadas)."""
+    if not await security.manager_gate(update, context):
+        return
+
+    chat_id = update.effective_chat.id
+    msg_carregando = await context.bot.send_message(chat_id=chat_id, text="🔍 Analisando performance dos técnicos...")
+
+    try:
+        performance = await database.fetch_data(queries.SQL_TECH_PERFORMANCE_TODAY)
+        rejected = await database.fetch_data(queries.SQL_REJECTED_SOLUTIONS_PER_TECH)
+
+        msg = analytics_service.build_tech_performance_message(performance, rejected)
+        await msg_carregando.edit_text(msg, parse_mode="HTML")
+
+    except Exception as e:
+        logging.error(f"Erro ao consultar performance dos técnicos: {e}")
+        await msg_carregando.edit_text("❌ Falha ao consultar dados de performance.")
+
+
+async def insights_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Exibe insights automáticos de tendências de categorias de chamados."""
+    if not await security.manager_gate(update, context):
+        return
+
+    chat_id = update.effective_chat.id
+    msg_carregando = await context.bot.send_message(chat_id=chat_id, text="🧠 Gerando insights automáticos...")
+
+    try:
+        category_trend = await database.fetch_data(queries.SQL_CATEGORY_TREND)
+        entity_trend = await database.fetch_data(queries.SQL_ENTITY_TREND)
+
+        msg = analytics_service.build_insights_message(category_trend, entity_trend)
+        await msg_carregando.edit_text(msg, parse_mode="HTML")
+
+    except Exception as e:
+        logging.error(f"Erro ao gerar insights automáticos: {e}")
+        await msg_carregando.edit_text("❌ Falha ao gerar insights automáticos.")
+
+
+async def ranking_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Exibe o ranking semanal de técnicos com gamificação."""
+    if not await security.manager_gate(update, context):
+        return
+
+    chat_id = update.effective_chat.id
+    msg_carregando = await context.bot.send_message(chat_id=chat_id, text="🏆 Gerando ranking da semana...")
+
+    try:
+        ranking = await database.fetch_data(queries.SQL_RANKING_WEEKLY)
+
+        msg = analytics_service.build_ranking_message(ranking)
+        await msg_carregando.edit_text(msg, parse_mode="HTML")
+
+    except Exception as e:
+        logging.error(f"Erro ao gerar ranking semanal: {e}")
+        await msg_carregando.edit_text("❌ Falha ao gerar ranking semanal.")
+
+
+
 async def cadastrar_email_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Permite ao gestor vincular ou atualizar seu endereço de e-mail."""
     if not await security.manager_gate(update, context):
@@ -182,6 +248,18 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     if data == "quick_status":
         await status_handler(update, context)
+        return
+
+    if data == "quick_performance":
+        await performance_handler(update, context)
+        return
+
+    if data == "quick_insights":
+        await insights_handler(update, context)
+        return
+
+    if data == "quick_ranking":
+        await ranking_handler(update, context)
         return
 
     if data == "confirm_email_send":
@@ -265,6 +343,9 @@ def create_telegram_app() -> Application:
     app.add_handler(CommandHandler("relatorio", relatorio_handler))
     app.add_handler(CommandHandler("status", status_handler))
     app.add_handler(CommandHandler("cadastrar_email", cadastrar_email_handler))
+    app.add_handler(CommandHandler("performance", performance_handler))
+    app.add_handler(CommandHandler("insights", insights_handler))
+    app.add_handler(CommandHandler("ranking", ranking_handler))
 
     # Handlers de botões inline
     app.add_handler(CallbackQueryHandler(callback_query_handler))

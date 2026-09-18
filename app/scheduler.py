@@ -5,6 +5,7 @@ from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application
 
 from app import config
+from app import database, queries, analytics_service
 
 
 def get_next_run(now: datetime) -> datetime:
@@ -88,20 +89,115 @@ async def trigger_manager_report_prompt(telegram_app: Application):
             logging.error(f"Falha ao enviar prompt de relatório para Chat ID {chat_id}: {e}")
 
 
+async def trigger_weekly_ranking(telegram_app: Application):
+    """
+    Envia automaticamente o ranking semanal para os gestores e grupos autorizados.
+    """
+    logging.info("🏆 Disparando ranking semanal automático para gestores no Telegram...")
+
+    managers = config.get_managers_map()
+    recipients = set()
+
+    for telegram_id, info in managers.items():
+        if info.get("ativo", True):
+            recipients.add(int(telegram_id))
+
+    for chat_id_str in config.ALLOWED_CHAT_IDS:
+        try:
+            recipients.add(int(chat_id_str))
+        except ValueError:
+            pass
+
+    if not recipients:
+        logging.warning("⚠️ Nenhum destinatário para o ranking semanal.")
+        return
+
+    try:
+        ranking = await database.fetch_data(queries.SQL_RANKING_WEEKLY)
+        msg = analytics_service.build_ranking_message(ranking)
+
+        for chat_id in recipients:
+            try:
+                await telegram_app.bot.send_message(
+                    chat_id=chat_id,
+                    text=msg,
+                    parse_mode="HTML"
+                )
+                logging.info(f"Ranking semanal enviado para Chat ID: {chat_id}")
+            except Exception as e:
+                logging.error(f"Falha ao enviar ranking para Chat ID {chat_id}: {e}")
+    except Exception as e:
+        logging.error(f"Erro ao gerar ranking semanal automático: {e}")
+
+
+def _get_weekday_number(day_name: str) -> int:
+    """Converte nome do dia da semana (inglês) para número (0=segunda, 6=domingo)."""
+    days = {
+        "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+        "friday": 4, "saturday": 5, "sunday": 6
+    }
+    return days.get(day_name.lower(), 0)
+
+
 async def start_periodic_scheduler(telegram_app: Application):
-    """Loop assíncrono do agendador em segundo plano."""
+    """Loop assíncrono do agendador em segundo plano (relatórios + ranking semanal)."""
     logging.info(f"⏰ Agendador de relatórios GLPI iniciado. Horários configurados: {config.SCHEDULE_TIMES}")
+    logging.info(f"🏆 Ranking semanal configurado para: {config.RANKING_SCHEDULE_DAY} às {config.RANKING_SCHEDULE_TIME}")
+
+    ranking_day = _get_weekday_number(config.RANKING_SCHEDULE_DAY)
 
     while True:
         now = datetime.now()
-        proximo = get_next_run(now)
-        delta = (proximo - now).total_seconds()
 
-        logging.info(f"Próximo alerta de relatório agendado para: {proximo.strftime('%Y-%m-%d %H:%M:%S')} (em {int(delta)} segundos)")
+        # Próximo horário de relatório agendado
+        proximo_relatorio = get_next_run(now)
+
+        # Próximo horário de ranking semanal
+        proximo_ranking = _get_next_ranking_run(now, ranking_day)
+
+        # Pega o mais próximo entre relatório e ranking
+        if proximo_ranking and proximo_ranking < proximo_relatorio:
+            proximo = proximo_ranking
+            tipo = "ranking"
+        else:
+            proximo = proximo_relatorio
+            tipo = "relatorio"
+
+        delta = (proximo - now).total_seconds()
+        logging.info(
+            f"Próximo disparo ({tipo}): {proximo.strftime('%Y-%m-%d %H:%M:%S')} "
+            f"(em {int(delta)} segundos)"
+        )
 
         await asyncio.sleep(max(1, delta))
 
         try:
-            await trigger_manager_report_prompt(telegram_app)
+            if tipo == "ranking":
+                await trigger_weekly_ranking(telegram_app)
+            else:
+                await trigger_manager_report_prompt(telegram_app)
         except Exception as e:
-            logging.error(f"Erro ao executar rotina do agendador: {e}")
+            logging.error(f"Erro ao executar rotina do agendador ({tipo}): {e}")
+
+
+def _get_next_ranking_run(now: datetime, target_weekday: int):
+    """Calcula o próximo horário de disparo do ranking semanal."""
+    try:
+        parts = config.RANKING_SCHEDULE_TIME.split(":")
+        h, m = int(parts[0]), int(parts[1])
+    except Exception:
+        h, m = 8, 0
+
+    today = now.date()
+    days_ahead = target_weekday - today.weekday()
+    if days_ahead < 0:
+        days_ahead += 7
+
+    ranking_date = today + timedelta(days=days_ahead)
+    ranking_dt = datetime.combine(ranking_date, time(h, m))
+
+    # Se já passou nesta semana, pula para a próxima
+    if ranking_dt <= now:
+        ranking_dt += timedelta(days=7)
+
+    return ranking_dt
